@@ -1,0 +1,323 @@
+syntax = "proto3";
+package aiserver.v1;
+option go_package = "cursor/gen/aiserver/v1;aiserverv1";
+
+enum PathKeyHashType {
+  PATH_KEY_HASH_TYPE_UNSPECIFIED = 0;
+  PATH_KEY_HASH_TYPE_SHA256 = 1;
+}
+
+enum SimilarityMetricType {
+  SIMILARITY_METRIC_TYPE_UNSPECIFIED = 0;
+  SIMILARITY_METRIC_TYPE_SIMHASH = 1;
+}
+
+enum EmbeddingModel {
+  EMBEDDING_MODEL_UNSPECIFIED = 0;
+  EMBEDDING_MODEL_VOYAGE_CODE_2 = 1;
+  EMBEDDING_MODEL_TEXT_EMBEDDINGS_LARGE_3 = 2;
+  EMBEDDING_MODEL_QWEN_1_5B_CUSTOM = 3;
+  EMBEDDING_MODEL_MOCK_CHUNKER_ERROR = 4;
+  EMBEDDING_MODEL_QWEN_1_5B_0618_CUSTOM = 5;
+  EMBEDDING_MODEL_QWEN_1_5B_0618_FP8_MM_CUSTOM = 6;
+}
+
+enum DatabaseProvider {
+  DATABASE_PROVIDER_UNSPECIFIED = 0;
+  DATABASE_PROVIDER_AURORA = 1;
+  DATABASE_PROVIDER_PLANETSCALE = 2;
+}
+
+message FastRepoInitHandshakeV2Request {
+  RepositoryInfo repository = 1;
+  string root_hash = 2;
+  SimilarityMetricType similarity_metric_type = 3;
+  repeated float similarity_metric = 4;
+  string path_key_hash = 5;
+  PathKeyHashType path_key_hash_type = 6;
+  bool do_copy = 7;
+  string path_key = 8;
+  LocalCodebaseFileInfo local_codebase_root_info = 9;
+  bool return_after_background_copy_started = 10;
+}
+
+message FastRepoInitHandshakeV2Response {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_FAILURE = 1;
+    STATUS_SUCCESS = 2;
+  }
+  Status status = 1;
+  repeated RepositoryCodebaseInfo codebases = 2;
+}
+
+message GetHighLevelFolderDescriptionRequest {
+  repeated Readme readmes = 1;
+  repeated string top_level_relative_workspace_paths = 2;
+  string workspace_root_path = 4;
+
+  message Readme {
+    string relative_workspace_path = 1;
+    string contents = 2;
+  }
+}
+
+message GetHighLevelFolderDescriptionResponse {
+  string description = 1;
+}
+
+message SyncMerkleSubtreeV2Request {
+  ClientRepositoryInfo client_repository_info = 1;
+  string codebase_id = 2;
+  PartialPathItem local_partial_path = 3;
+  repeated PartialPathItem local_partial_paths = 4;
+}
+
+message SyncMerkleSubtreeV2Response {
+  bool match = 1;
+  Mismatch mismatch = 2;
+  repeated PartialPathResult results = 3;
+
+  message Mismatch {
+    repeated PartialPathItem children = 1;
+  }
+
+  message PartialPathResult {
+    bool match = 1;
+    Mismatch mismatch = 2;
+    bool response_size_limit_exceeded = 3;
+  }
+}
+
+message FastUpdateFileV2Request {
+  enum UpdateType {
+    UPDATE_TYPE_UNSPECIFIED = 0;
+    UPDATE_TYPE_ADD = 1;
+    UPDATE_TYPE_DELETE = 2;
+    UPDATE_TYPE_MODIFY = 3;
+    UPDATE_TYPE_BATCH = 4;
+  }
+
+  ClientRepositoryInfo client_repository_info = 1;
+  string codebase_id = 2;
+  PartialPathItem directory = 3;
+  LocalFile local_file = 4;
+  repeated PartialPathItem ancestor_spline = 5;
+  UpdateType update_type = 6;
+  repeated FileUpdate file_updates = 7;
+
+  message LocalFile {
+    File file = 1;
+    string hash = 2;
+    string unencrypted_relative_workspace_path = 3;
+  }
+
+  message FileUpdate {
+    PartialPathItem directory = 1;
+    LocalFile local_file = 2;
+    repeated PartialPathItem ancestor_spline = 3;
+    UpdateType update_type = 4;
+  }
+}
+
+message FastUpdateFileV2Response {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_SUCCESS = 1;
+    STATUS_FAILURE = 2;
+    STATUS_EXPECTED_FAILURE = 3;
+  }
+  Status status = 1;
+}
+
+message EnsureIndexCreatedRequest {
+  RepositoryInfo repository = 1;
+}
+
+message EnsureIndexCreatedResponse {
+}
+
+message RepositoryCodebaseSyncStatus {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_SUCCESS = 1;
+    STATUS_FAILURE = 2;
+  }
+  string codebase_id = 1;
+  Status status = 2;
+  SimilarityMetricType similarity_metric_type = 3;
+  repeated float similarity_metric = 4;
+  string path_key_hash = 5;
+  PathKeyHashType path_key_hash_type = 6;
+}
+
+message FastRepoSyncCompleteRequest {
+  repeated RepositoryCodebaseSyncStatus codebases = 1;
+}
+
+message FastRepoSyncCompleteResponse {
+}
+
+message LocalCodebaseFileInfo {
+  string encrypted_relative_path = 1;
+  string hash = 2;
+  repeated LocalCodebaseFileInfo children = 3;
+  optional string separator = 4;
+}
+
+message RepositoryInfo {
+  string relative_workspace_path = 1;
+  repeated string remote_urls = 2;
+  repeated string remote_names = 3;
+  string repo_name = 4;
+  string repo_owner = 5;
+  bool is_tracked = 6;
+  bool is_local = 7;
+  optional int32 num_files = 8;
+  optional double orthogonal_transform_seed = 9;
+  optional EmbeddingModel preferred_embedding_model = 10;
+  string workspace_uri = 11;
+  optional DatabaseProvider preferred_db_provider = 12;
+}
+
+message RepositoryCodebaseInfo {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_UP_TO_DATE = 1;
+    STATUS_OUT_OF_SYNC = 2;
+    STATUS_EMPTY = 3;
+    STATUS_EMPTY_WITH_COPY_AVAILABLE = 4;
+    STATUS_COPY_IN_PROGRESS = 5;
+  }
+  string codebase_id = 1;
+  Status status = 2;
+  QueryOnlyRepositoryInfo query_only_similar_repo = 3;
+  string copy_task_handle = 4;
+}
+
+message ClientRepositoryInfo {
+  double orthogonal_transform_seed = 1;
+}
+
+message PartialPathItem {
+  string relative_workspace_path = 1;
+  string hash_of_node = 2;
+}
+
+message File {
+  string relative_workspace_path = 1;
+  string contents = 2;
+  FileGit file_git_context = 3;
+}
+
+message FileGit {
+  repeated GitCommit commits = 1;
+}
+
+message GitCommit {
+  string commit = 1;
+  string author = 2;
+  string date = 3;
+  string message = 4;
+}
+
+message QueryOnlyRepositoryInfo {
+  RepositoryInfo repository = 1;
+  QueryOnlyRepoAccess query_only_repo_access = 2;
+}
+
+message QueryOnlyRepoAccess {
+  string owner_auth_id = 1;
+  string access_token = 2;
+  string user_repo_owner = 3;
+  string user_repo_name = 4;
+}
+
+message SearchRepositoryRequest {
+    string query = 1;
+    RepositoryInfo repository = 2;
+    int32 top_k = 3;
+    ModelDetails model_details = 4;
+    bool rerank = 5;
+    optional bool context_cache_request = 6;
+    optional string glob_filter = 7;
+    optional string not_glob_filter = 8;
+    optional int32 race_n_requests = 9;
+    QueryOnlyRepoAccess query_only_repo_access = 10;
+}
+
+message SearchRepositoryResponse {
+    repeated CodeResult code_results = 1;
+}
+
+message ModelDetails {
+    optional string model_name = 1;
+    optional string api_key = 2;
+    optional bool enable_ghost_mode = 3;
+    optional AzureState azure_state = 4;
+    optional bool enable_slow_pool = 5;
+    optional string openai_api_base_url = 6;
+    optional BedrockState bedrock_state = 7;
+    optional bool max_mode = 8;
+}
+
+message AzureState {
+    string api_key = 1;
+    string base_url = 2;
+    string deployment = 3;
+    bool use_azure = 4;
+}
+
+message BedrockState {
+    string access_key = 1;
+    string secret_key = 2;
+    string region = 3;
+    bool use_bedrock = 4;
+    string session_token = 5;
+}
+
+message CodeResult {
+    CodeBlock code_block = 1;
+    float score = 2;
+}
+
+message CodeBlock {
+    string relative_workspace_path = 1;
+    optional string file_contents = 2;
+    optional int32 file_contents_length = 9;
+    CursorRange range = 3;
+    string contents = 4;
+    Signatures signatures = 5;
+    optional string override_contents = 6;
+    optional string original_contents = 7;
+    repeated DetailedLine detailed_lines = 8;
+    FileGit file_git_context = 10;
+
+    message Signatures {
+        repeated CursorRange ranges = 1;
+    }
+}
+
+message CursorRange {
+    CursorPosition start_position = 1;
+    CursorPosition end_position = 2;
+}
+
+message CursorPosition {
+    int32 line = 1;
+    int32 column = 2;
+}
+
+message DetailedLine {
+    string text = 1;
+    float line_number = 2;
+    bool is_signature = 3;
+}
+
+message FileResult {
+    File file = 1;
+    float score = 2;
+}
+
+
+
