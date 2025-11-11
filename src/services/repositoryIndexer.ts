@@ -607,39 +607,46 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
     // 先判断标志再做重活，避免不必要的性能开销
     if (!st.pendingChanges) return;
 
-    const merkle = await merkleBuild(workspacePath);
-    const scheme = new V1MasterKeyedEncryptionScheme(st.pathKey);
-    const changed = await incrementalSync(workspacePath, merkle, runtimeId, scheme, ctx.baseUrl, ctx.authToken, st.orthogonalTransformSeed);
-    if (changed.length === 0) return;
-    // upload changed files
-    indexLogger.debug("Auto-sync changed files", { count: changed.length });
+    // 先清除标志，避免重复触发
+    // 如果同步期间有新变更，fileWatcher 会重新设置为 true
+    st.pendingChanges = false;
+    await saveWorkspaceState(st);
+    indexLogger.debug("Cleared pendingChanges flag before sync", { workspacePath });
 
-    await uploadFilesChunk(
-      changed.map((rp) => path.join(workspacePath, rp)),
-      workspacePath,
-      scheme,
-      st.orthogonalTransformSeed,
-      runtimeId,
-      ctx.baseUrl,
-      ctx.authToken,
-      {},
-    );
-    const pathKeyHash = sha256Hex(st.pathKey);
-    const simhash = Array.from(await merkle.getSimhash()).map((n) => Number(n));
-    const repositoryPb = createRepositoryPb(workspacePath, st.orthogonalTransformSeed, st.repoName || `local-${crypto.createHash("sha256").update(workspacePath).digest("hex").slice(0, 12)}`);
-    await runEnsureAndSyncComplete(ctx.baseUrl, ctx.authToken, repositoryPb, runtimeId, simhash, pathKeyHash);
+    try {
+      const merkle = await merkleBuild(workspacePath);
+      const scheme = new V1MasterKeyedEncryptionScheme(st.pathKey);
+      const changed = await incrementalSync(workspacePath, merkle, runtimeId, scheme, ctx.baseUrl, ctx.authToken, st.orthogonalTransformSeed);
+      
+      if (changed.length === 0) {
+        indexLogger.debug("No files changed, sync skipped", { workspacePath });
+        return;
+      }
+      
+      // upload changed files
+      indexLogger.debug("Auto-sync changed files", { count: changed.length });
 
-    // 修复：重新加载状态，检查同步期间是否有新变更
-    // 避免竞争条件：同步过程中的新变更不应被覆盖
-    const freshSt = await loadWorkspaceState(workspacePath);
-    if (!freshSt.pendingChanges) {
-      // 期间没有新变更，可以安全清除标志
-      freshSt.pendingChanges = false;
-      await saveWorkspaceState(freshSt);
-      indexLogger.debug("Cleared pendingChanges flag after successful sync", { workspacePath });
-    } else {
-      // 期间有新变更，保持标志为 true，下次同步会继续处理
-      indexLogger.debug("New changes detected during sync, pendingChanges remains true", { workspacePath });
+      await uploadFilesChunk(
+        changed.map((rp) => path.join(workspacePath, rp)),
+        workspacePath,
+        scheme,
+        st.orthogonalTransformSeed,
+        runtimeId,
+        ctx.baseUrl,
+        ctx.authToken,
+        {},
+      );
+      const pathKeyHash = sha256Hex(st.pathKey);
+      const simhash = Array.from(await merkle.getSimhash()).map((n) => Number(n));
+      const repositoryPb = createRepositoryPb(workspacePath, st.orthogonalTransformSeed, st.repoName || `local-${crypto.createHash("sha256").update(workspacePath).digest("hex").slice(0, 12)}`);
+      await runEnsureAndSyncComplete(ctx.baseUrl, ctx.authToken, repositoryPb, runtimeId, simhash, pathKeyHash);
+      indexLogger.info("Auto-sync completed successfully", { workspacePath, filesUploaded: changed.length });
+    } catch (error) {
+      // 同步失败时，重新设置标志，以便下次重试
+      indexLogger.error("Auto-sync failed, will retry on next interval", { workspacePath, error });
+      const errorSt = await loadWorkspaceState(workspacePath);
+      errorSt.pendingChanges = true;
+      await saveWorkspaceState(errorSt);
     }
   }
 
@@ -647,6 +654,6 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
     setInterval(() => { void autoSyncIfNeeded(workspacePath); }, DEFAULTS.AUTO_SYNC_INTERVAL_MS);
   }
 
-  return { indexProject, autoSyncIfNeeded, scheduleAutoSync };
+  return { indexProject, autoSyncIfNeeded, scheduleAutoSync, startFileWatcher };
 }
 
