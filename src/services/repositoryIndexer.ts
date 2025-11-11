@@ -628,8 +628,19 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
     const simhash = Array.from(await merkle.getSimhash()).map((n) => Number(n));
     const repositoryPb = createRepositoryPb(workspacePath, st.orthogonalTransformSeed, st.repoName || `local-${crypto.createHash("sha256").update(workspacePath).digest("hex").slice(0, 12)}`);
     await runEnsureAndSyncComplete(ctx.baseUrl, ctx.authToken, repositoryPb, runtimeId, simhash, pathKeyHash);
-    st.pendingChanges = false;
-    await saveWorkspaceState(st);
+
+    // 修复：重新加载状态，检查同步期间是否有新变更
+    // 避免竞争条件：同步过程中的新变更不应被覆盖
+    const freshSt = await loadWorkspaceState(workspacePath);
+    if (!freshSt.pendingChanges) {
+      // 期间没有新变更，可以安全清除标志
+      freshSt.pendingChanges = false;
+      await saveWorkspaceState(freshSt);
+      indexLogger.debug("Cleared pendingChanges flag after successful sync", { workspacePath });
+    } else {
+      // 期间有新变更，保持标志为 true，下次同步会继续处理
+      indexLogger.debug("New changes detected during sync, pendingChanges remains true", { workspacePath });
+    }
   }
 
   function scheduleAutoSync(workspacePath: string) {
