@@ -49,41 +49,25 @@ async function readCodeFromFile(workspacePath: string, filePath: string, startLi
   }
 }
 
-// Language detection based on file extension
-type Language = 'python' | 'javascript' | 'typescript' | 'cpp' | 'unknown';
-
-function detectLanguage(filePath: string): Language {
-  const ext = path.extname(filePath).toLowerCase();
-  const languageMap: Record<string, Language> = {
-    '.py': 'python',
-    '.js': 'javascript',
-    '.jsx': 'javascript',
-    '.ts': 'typescript',
-    '.tsx': 'typescript',
-    '.cpp': 'cpp',
-    '.cc': 'cpp',
-    '.cxx': 'cpp',
-    '.c': 'cpp',
-    '.hpp': 'cpp',
-    '.h': 'cpp',
-    '.hxx': 'cpp',
-    '.hh': 'cpp',
-  };
-  return languageMap[ext] || 'unknown';
+// Get file extension for pattern matching
+function getFileExtension(filePath: string): string {
+  return path.extname(filePath).toLowerCase();
 }
 
-// Language-specific signature patterns
-function getSignaturePatterns(language: Language): RegExp[] {
-  switch (language) {
-    case 'python':
+// File extension-specific signature patterns
+function getSignaturePatterns(fileExt: string): RegExp[] {
+  switch (fileExt) {
+    case '.py':
       return [
         /^\s*(?:async\s+)?def\s+\w+\s*\(/,  // function/method definitions
         /^\s*class\s+\w+/,  // class definitions
         /^\s*@\w+/,  // decorators
       ];
-    
-    case 'javascript':
-    case 'typescript':
+
+    case '.js':
+    case '.jsx':
+    case '.ts':
+    case '.tsx':
       return [
         /^\s*(?:export\s+)?(?:async\s+)?function\s+\w+/,  // function declarations
         /^\s*(?:export\s+)?(?:abstract\s+)?class\s+\w+/,  // class declarations
@@ -94,30 +78,42 @@ function getSignaturePatterns(language: Language): RegExp[] {
         /^\s*(?:public|private|protected|static|async)\s+\w+\s*\(/,  // method declarations
         /^\s*(?:get|set)\s+\w+\s*\(/,  // getter/setter
       ];
-    
-    case 'cpp':
+
+    case '.cpp':
+    case '.cc':
+    case '.cxx':
+    case '.c':
+    case '.h':
+    case '.hpp':
+    case '.hxx':
+    case '.hh':
       return [
-        // Unreal Engine macros
-        /^\s*UCLASS\s*\(/,  // Unreal class macro
-        /^\s*USTRUCT\s*\(/,  // Unreal struct macro
-        /^\s*UENUM\s*\(/,  // Unreal enum macro
-        /^\s*UINTERFACE\s*\(/,  // Unreal interface macro
-        /^\s*UFUNCTION\s*\(/,  // Unreal function macro
-        /^\s*UPROPERTY\s*\(/,  // Unreal property macro
-        /^\s*DECLARE_DYNAMIC_(?:MULTICAST_)?DELEGATE/,  // Unreal delegate macro
-        /^\s*GENERATED_(?:BODY|UCLASS_BODY|USTRUCT_BODY)\s*\(\)/,  // Unreal generated body
-        
-        // Standard C++ patterns
+        // Standard C++ patterns - only extract actual definitions, not macros
         /^\s*class\s+(?:\w+_API\s+)?\w+/,  // class (with optional API macro)
         /^\s*struct\s+(?:\w+_API\s+)?\w+/,  // struct (with optional API macro)
         /^\s*namespace\s+\w+/,  // namespace
         /^\s*template\s*<.*?>/,  // template
         /^\s*enum\s+(?:class\s+)?\w+/,  // enum
-        /^\s*(?:virtual\s+)?(?:static\s+)?(?:inline\s+)?(?:FORCEINLINE\s+)?(?:explicit\s+)?(?:\w+(?:::\w+)*\s*(?:<.*?>)?\s+)?~?\w+\s*\(/,  // functions/methods/constructors
+
+        // Function/method signatures - more restrictive pattern
+        // Must have return type or be a constructor/destructor
+        // Excludes control flow and function calls by requiring specific patterns
+        /^\s*(?:virtual\s+)?(?:static\s+)?(?:inline\s+)?(?:FORCEINLINE\s+)?(?:explicit\s+)?(?:const\s+)?(?:unsigned\s+)?(?:signed\s+)?(?:void|bool|int|float|double|char|long|short|auto|[\w:]+\*?)\s+(?:\*+\s*)?[\w:]+\s*\([^)]*\)\s*(?:const\s*)?(?:override\s*)?(?:final\s*)?(?:\{|;|$)/,  // function/method with return type
+        /^\s*(?:virtual\s+)?(?:explicit\s+)?~?[a-z_][\w:]*\s*\([^)]*\)\s*(?:\{|;|:|$)/,  // constructor/destructor (no return type) - must start with lowercase or underscore to exclude macros
       ];
-    
+
+    case '.lua':
+      return [
+        /^\s*function\s+[\w.:]+\s*\(/,  // global function: function name(...)
+        /^\s*local\s+function\s+\w+\s*\(/,  // local function: local function name(...)
+        /^\s*function\s+\w+:\w+\s*\(/,  // method with colon: function Class:method(...)
+        /^\s*function\s+\w+\.\w+\s*\(/,  // method with dot: function Class.method(...)
+        /^\s*local\s+\w+\s*=\s*\{/,  // local table: local tableName = {}
+        /^\s*\w+\s*=\s*\{/,  // global table: TableName = {}
+      ];
+
     default:
-      // Fallback to JavaScript/TypeScript patterns for unknown languages
+      // Fallback to JavaScript/TypeScript patterns for unknown file types
       return [
         /^\s*(?:export\s+)?(?:async\s+)?function\s+\w+/,
         /^\s*(?:export\s+)?class\s+\w+/,
@@ -127,23 +123,101 @@ function getSignaturePatterns(language: Language): RegExp[] {
 }
 
 // Check if a line is a comment
-function isCommentLine(line: string, language: Language): boolean {
+function isCommentLine(line: string, fileExt: string): boolean {
   const trimmed = line.trim();
-  
-  switch (language) {
-    case 'python':
+
+  switch (fileExt) {
+    case '.py':
       return trimmed.startsWith('#');
-    
-    case 'javascript':
-    case 'typescript':
+
+    case '.js':
+    case '.jsx':
+    case '.ts':
+    case '.tsx':
       return trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*');
-    
-    case 'cpp':
+
+    case '.cpp':
+    case '.cc':
+    case '.cxx':
+    case '.c':
+    case '.h':
+    case '.hpp':
+    case '.hxx':
+    case '.hh':
       return trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*');
-    
+
+    case '.lua':
+      return trimmed.startsWith('--');
+
     default:
       return false;
   }
+}
+
+// Check if a line should be excluded from signature extraction
+function shouldExcludeLine(line: string, fileExt: string): boolean {
+  const trimmed = line.trim();
+
+  // Exclude empty lines and comments
+  if (!trimmed || isCommentLine(line, fileExt)) {
+    return true;
+  }
+
+  // Exclude uninformative standalone macros (C++/Unreal Engine)
+  // These are macros that appear alone without actual code definitions
+  const uninformativeMacroPatterns = [
+    /^\s*UFUNCTION\s*\([^)]*\)\s*$/,  // UFUNCTION(...) alone on a line
+    /^\s*UPROPERTY\s*\([^)]*\)\s*$/,  // UPROPERTY(...) alone on a line
+    /^\s*GENERATED_BODY\s*\(\s*\)\s*$/,  // GENERATED_BODY() alone
+    /^\s*GENERATED_UCLASS_BODY\s*\(\s*\)\s*$/,  // GENERATED_UCLASS_BODY() alone
+    /^\s*GENERATED_USTRUCT_BODY\s*\(\s*\)\s*$/,  // GENERATED_USTRUCT_BODY() alone
+  ];
+
+  if (uninformativeMacroPatterns.some(pattern => pattern.test(line))) {
+    return true;
+  }
+
+  // Exclude control flow statements (if, for, while, switch, etc.)
+  const controlFlowPatterns = [
+    /^\s*if\s*\(/,
+    /^\s*else\s*if\s*\(/,
+    /^\s*else\s*\{/,
+    /^\s*for\s*\(/,
+    /^\s*while\s*\(/,
+    /^\s*switch\s*\(/,
+    /^\s*catch\s*\(/,
+    /^\s*do\s*\{/,
+  ];
+
+  if (controlFlowPatterns.some(pattern => pattern.test(line))) {
+    return true;
+  }
+
+  // Exclude function calls (lines ending with semicolon after parentheses)
+  // But NOT function declarations which have return types
+  // Function declarations typically start with: type name(...); or modifiers type name(...);
+  // Function calls typically start with: name(...); or object.method(...);
+  if (/\)\s*;[\s]*$/.test(trimmed)) {
+    // Check if it looks like a function declaration (has return type keywords or modifiers)
+    const isFunctionDeclaration = /^\s*(?:virtual\s+|static\s+|inline\s+|FORCEINLINE\s+|explicit\s+|const\s+|unsigned\s+|signed\s+|extern\s+)?(?:void|bool|int|float|double|char|long|short|auto|[\w:]+\*?)\s+(?:\*+\s*)?[\w:~]+\s*\([^)]*\)\s*(?:const\s*)?(?:override\s*)?(?:final\s*)?;/.test(trimmed);
+
+    if (!isFunctionDeclaration) {
+      return true;  // It's a function call, exclude it
+    }
+  }
+
+  // Exclude assignment statements with function calls
+  // This catches patterns like: variable = value; or Bool("MediaEnd") = true;
+  if (/=\s*[^=].*;\s*$/.test(trimmed) && !/^\s*(?:const|let|var)\s+\w+\s*=\s*(?:async\s+)?\(/.test(trimmed)) {
+    return true;
+  }
+
+  // Exclude return statements
+  if (/^\s*return\s+/.test(trimmed)) {
+    return true;
+  }
+
+  return false;
 }
 
 // Helper function to extract signatures from code lines
@@ -152,26 +226,26 @@ async function extractSignaturesFromFile(workspacePath: string, filePath: string
     const fullPath = path.join(workspacePath, filePath);
     const content = await fs.readFile(fullPath, "utf-8");
     const lines = content.split("\n");
-    
+
     const signatures: Array<{ line: number; text: string }> = [];
     const start = Math.max(0, startLine - 1);
     const end = Math.min(lines.length, endLine);
-    
-    // Detect language and get appropriate patterns
-    const language = detectLanguage(filePath);
-    const signaturePatterns = getSignaturePatterns(language);
-    
+
+    // Get file extension and appropriate patterns
+    const fileExt = getFileExtension(filePath);
+    const signaturePatterns = getSignaturePatterns(fileExt);
+
     // Extract signatures from the specified line range
     const seenLines = new Set<number>();  // Avoid duplicates
-    
+
     for (let i = start; i < end; i++) {
       const line = lines[i];
-      
-      // Skip empty lines and comments
-      if (!line.trim() || isCommentLine(line, language)) {
+
+      // Use the new shouldExcludeLine function to filter out non-signatures
+      if (shouldExcludeLine(line, fileExt)) {
         continue;
       }
-      
+
       // Check if line matches any signature pattern
       if (signaturePatterns.some(pattern => pattern.test(line))) {
         const lineNum = i + 1;
@@ -181,7 +255,7 @@ async function extractSignaturesFromFile(workspacePath: string, filePath: string
         }
       }
     }
-    
+
     return signatures;
   } catch (error) {
     return [];

@@ -3,6 +3,7 @@ import { fileURLToPath } from "url";
 import fs from "fs-extra";
 import protobuf from "protobufjs";
 import { DEFAULTS, defaultHeaders } from "../utils/env.js";
+import { logger } from "../utils/logger.js";
 
 let protoRootPromise: Promise<protobuf.Root> | undefined;
 
@@ -139,6 +140,7 @@ export async function postProto<TReq extends object, TRes = any>(
 
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
     const res = await fetch(url, {
       method: "POST",
@@ -146,12 +148,15 @@ export async function postProto<TReq extends object, TRes = any>(
       body: Buffer.from(buffer),
       signal: controller.signal,
     } as RequestInit);
+
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
       throw new Error(`HTTP ${res.status} ${res.statusText}: ${txt}`);
     }
+
     const arrBuf = await res.arrayBuffer();
     const buf = Buffer.from(arrBuf);
+
     try {
       const TypeRes = root.lookupType(typeFullNameRes);
       if (!TypeRes) throw new Error("Missing response type");
@@ -164,14 +169,20 @@ export async function postProto<TReq extends object, TRes = any>(
 
       const obj = TypeRes.toObject(msg, { longs: String, enums: String, defaults: true });
       return obj as TRes;
-    } catch {
+    } catch (decodeError) {
+      // Attempt JSON fallback without verbose logging
       try {
         const json = JSON.parse(buf.toString("utf8"));
+        logger.warn(`Successfully parsed response as JSON after protobuf decode failure`);
         return json as TRes;
-      } catch {
+      } catch (jsonError) {
         return {} as TRes;
       }
     }
+  } catch (networkError) {
+    // Catch network-level errors (timeout, connection refused, etc.)
+    // Re-throw without verbose logging - semantic logs are handled by retry logic
+    throw networkError;
   } finally {
     clearTimeout(t);
   }

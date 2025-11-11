@@ -109,6 +109,15 @@ Add to your MCP client configuration (e.g., Claude Desktop):
 **Get CURSOR_AUTH_TOKEN:**
 Visit https://cursor.meteormail.me/ (⚠️ third-party tool)
 
+### Retry Configuration
+
+**Semaphore Retry Logging:** Automatically retries failed file upload and sync operations with detailed logging. Configure retry behavior via `.env` to handle network issues or API rate limits gracefully. Set `SEMAPHORE_RETRY_COUNT` (default: 3) for retry attempts and `SEMAPHORE_RETRY_DELAY_MS` (default: 200) for base delay between retries.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SEMAPHORE_RETRY_COUNT` | `3` | Number of retry attempts for failed operations |
+| `SEMAPHORE_RETRY_DELAY_MS` | `200` | Base delay in ms between retries (multiplied by attempt number) |
+
 ### Data Storage
 
 ```
@@ -247,6 +256,15 @@ mcp-cursearch index-activate /path/to/your/project
 
 **获取 CURSOR_AUTH_TOKEN:**
 访问 https://cursor.meteormail.me/ （⚠️ 第三方工具）
+
+### 重试配置
+
+**信号量重试日志:** 自动重试失败的文件上传和同步操作，并提供详细日志记录。通过 `.env` 配置重试行为，优雅处理网络问题或 API 速率限制。设置 `SEMAPHORE_RETRY_COUNT`（默认: 3）控制重试次数，`SEMAPHORE_RETRY_DELAY_MS`（默认: 200）控制重试间隔基础延迟。
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SEMAPHORE_RETRY_COUNT` | `3` | 失败操作的重试次数 |
+| `SEMAPHORE_RETRY_DELAY_MS` | `200` | 重试间隔基础延迟（毫秒，按尝试次数倍增） |
 
 ### 数据存储
 

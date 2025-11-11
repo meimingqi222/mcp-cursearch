@@ -10,6 +10,7 @@ import { V1MasterKeyedEncryptionScheme, decryptPathToRelPosix, encryptPathWindow
 import { ensureIndexCreated, fastRepoInitHandshakeV2, fastRepoSyncComplete, fastUpdateFileV2, syncMerkleSubtreeV2 } from "../client/cursorApi.js";
 import { loadWorkspaceState, saveWorkspaceState, WorkspaceState, setRuntimeCodebaseId, getRuntimeCodebaseId } from "./stateManager.js";
 import { startFileWatcher } from "./fileWatcher.js";
+import { logger } from "../utils/logger.js";
 
 export type IndexerContext = { authToken: string; baseUrl: string };
 
@@ -243,13 +244,23 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
           ancestorSpline: ancestorSplinePb,
           updateType: 1,
         };
-        try {
-          await fastUpdateFileV2(baseUrl, authToken, payload);
-          uploaded++;
-        } catch {
-          // ignore single-file failure
-        }
-      }, undefined, 3))
+
+        // This will throw if it fails, allowing withRetrySemaphore to retry
+        await fastUpdateFileV2(baseUrl, authToken, payload);
+        uploaded++;
+      }, undefined, DEFAULTS.SEMAPHORE_RETRY_COUNT, {
+        retries: DEFAULTS.SEMAPHORE_RETRY_COUNT,
+        delayMs: DEFAULTS.SEMAPHORE_RETRY_DELAY_MS,
+        logRetries: true,
+        operationName: `File upload: ${path.basename(abs)}`
+      }).catch(() => {
+        // Additional context logging after all retries failed
+        // The detailed error has already been logged by withRetrySemaphore
+        logger.error(
+          `⚠️  Skipping file and continuing with next file: ${path.basename(abs)}`
+        );
+        // Continue processing other files despite this failure
+      }))
     );
     return uploaded;
   }
@@ -382,7 +393,12 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
         if (!relPosix) break;
         if (visited.has(relPosix)) continue;
         iterations++;
-        const task = sem.withRetrySemaphore(() => processNode(relPosix), undefined, 3)
+        const task = sem.withRetrySemaphore(() => processNode(relPosix), undefined, DEFAULTS.SEMAPHORE_RETRY_COUNT, {
+          retries: DEFAULTS.SEMAPHORE_RETRY_COUNT,
+          delayMs: DEFAULTS.SEMAPHORE_RETRY_DELAY_MS,
+          logRetries: true,
+          operationName: `Sync node: ${relPosix}`
+        })
           .catch(() => {})
           .finally(() => running.delete(task as any));
         running.add(task as any);

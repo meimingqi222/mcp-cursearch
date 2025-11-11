@@ -1,10 +1,18 @@
 import os from "os";
 import path from "path";
 import crypto from "crypto";
+import { fileURLToPath } from "url";
 import { config } from "dotenv";
 
-// Load environment variables from .env file
-config();
+// Get the directory of the current module
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load environment variables from .env file in the package root
+// The compiled file is at: <package-root>/dist/utils/env.js
+// So we need to go up 2 levels to reach the package root: ../../.env
+const envPath = path.resolve(__dirname, "../../.env");
+config({ path: envPath });
 
 export type ResolvedConfig = {
   authToken: string;
@@ -76,6 +84,8 @@ export const DEFAULTS = {
   PROTO_TIMEOUT_MS: parseInt(process.env.PROTO_TIMEOUT_MS || "30000", 10),
   PROTO_SEARCH_TIMEOUT_MS: parseInt(process.env.PROTO_SEARCH_TIMEOUT_MS || "60000", 10),
   AUTO_SYNC_INTERVAL_MS: parseInt(process.env.AUTO_SYNC_INTERVAL_MS || String(5 * 60 * 1000), 10),
+  SEMAPHORE_RETRY_COUNT: parseInt(process.env.SEMAPHORE_RETRY_COUNT || "3", 10),
+  SEMAPHORE_RETRY_DELAY_MS: parseInt(process.env.SEMAPHORE_RETRY_DELAY_MS || "200", 10),
 };
 
 
