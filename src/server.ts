@@ -5,6 +5,7 @@ import { createRepositoryIndexer } from "./services/repositoryIndexer.js";
 import { createCodeSearcher } from "./services/codeSearcher.js";
 import { setActiveWorkspace } from "./services/stateManager.js";
 import { logger } from "./utils/logger.js";
+import { startFileWatcher } from "./services/watcherManager.js";
 
 export type ServerContext = { authToken: string; baseUrl: string };
 
@@ -151,7 +152,27 @@ export async function createMcpServer(server: any, ctx: ServerContext): Promise<
         try {
           indexingTasks.set(normalizedPath, { ...indexingTasks.get(normalizedPath)!, status: 'indexing' });
           logger.info(`Starting index creation for workspace: ${normalizedPath}`);
-          await indexer.indexProject({ workspacePath: normalizedPath });
+          
+          // Pass progress callback to update indexing status in real-time
+          await indexer.indexProject({ 
+            workspacePath: normalizedPath,
+            onProgress: (progress) => {
+              const task = indexingTasks.get(normalizedPath);
+              if (task) {
+                indexingTasks.set(normalizedPath, {
+                  ...task,
+                  progress: progress.percentage,
+                });
+                logger.debug(`Indexing progress for ${normalizedPath}: ${progress.percentage}% (${progress.current}/${progress.total})`);
+              }
+            }
+          });
+
+          // 索引完成后启动文件监听器和自动同步
+          startFileWatcher(normalizedPath);
+          indexer.scheduleAutoSync(normalizedPath);
+          logger.info(`File watcher and auto-sync scheduled for workspace: ${normalizedPath}`);
+
           indexingTasks.set(normalizedPath, {
             status: 'completed',
             progress: 100,
@@ -198,6 +219,27 @@ export async function createMcpServer(server: any, ctx: ServerContext): Promise<
       const task = indexingTasks.get(normalizedPath);
 
       if (!task) {
+        // 内存中没有任务，检查磁盘状态
+        try {
+          const { loadWorkspaceState } = await import("./services/stateManager.js");
+          const st = await loadWorkspaceState(normalizedPath);
+
+          if (st.codebaseId && st.pathKey) {
+            // 工作区已索引完成
+            return CompatibilityCallToolResultSchema.parse({
+              content: [{ type: "text", text: JSON.stringify({
+                workspace_path: normalizedPath,
+                status: "completed",
+                progress: 100,
+                message: `Indexing completed for ${normalizedPath}. Workspace is ready for search.`,
+              }) }],
+            });
+          }
+        } catch {
+          // 忽略错误，继续返回 not_found
+        }
+
+        // 真正未找到或未索引
         return CompatibilityCallToolResultSchema.parse({
           content: [{ type: "text", text: JSON.stringify({
             workspace_path: normalizedPath,

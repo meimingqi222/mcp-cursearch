@@ -431,7 +431,11 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
   const scheduled = new Set<string>();
 
 
-  async function indexProject(params: { workspacePath: string; verbose?: boolean }) {
+  async function indexProject(params: { 
+    workspacePath: string; 
+    verbose?: boolean;
+    onProgress?: (progress: { current: number; total: number; percentage: number }) => void;
+  }) {
     const workspacePath = path.resolve(params.workspacePath);
     let st = await loadWorkspaceState(workspacePath);
     indexLogger.info("Indexing started", { workspacePath });
@@ -543,6 +547,12 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
 
       // Update progress bar after upload
       progressBar.update(totalUploaded, { batch: batchNum, totalBatches });
+
+      // Call progress callback if provided
+      if (params.onProgress) {
+        const percentage = Math.floor((totalUploaded / totalFiles) * 100);
+        params.onProgress({ current: totalUploaded, total: totalFiles, percentage });
+      }
 
       if (params.verbose) {
         for (const abs of batch) {
