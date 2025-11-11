@@ -604,8 +604,10 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
     if (!getRuntimeCodebaseId(workspacePath) && runtimeId) setRuntimeCodebaseId(workspacePath, runtimeId);
     indexLogger.debug("Auto-sync check", { workspacePath, pendingChanges: st.pendingChanges, runtimeIdPresent: !!runtimeId });
 
-    const merkle = await merkleBuild(workspacePath);
+    // 先判断标志再做重活，避免不必要的性能开销
     if (!st.pendingChanges) return;
+
+    const merkle = await merkleBuild(workspacePath);
     const scheme = new V1MasterKeyedEncryptionScheme(st.pathKey);
     const changed = await incrementalSync(workspacePath, merkle, runtimeId, scheme, ctx.baseUrl, ctx.authToken, st.orthogonalTransformSeed);
     if (changed.length === 0) return;

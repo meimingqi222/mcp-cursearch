@@ -12,8 +12,7 @@ export type WorkspaceState = {
   orthogonalTransformSeed?: number;
   repoName?: string;
   repoOwner?: string;
-  // Ephemeral (not persisted):
-  pendingChanges?: boolean;
+  pendingChanges?: boolean;  // 持久化到磁盘，用于跨进程同步状态
 };
 
 // Per-workspace mutex to serialize state reads/writes
@@ -64,6 +63,7 @@ export async function saveWorkspaceState(st: WorkspaceState): Promise<void> {
       orthogonalTransformSeed: st.orthogonalTransformSeed,
       repoName: st.repoName,
       repoOwner: st.repoOwner,
+      pendingChanges: st.pendingChanges ?? false, // 持久化pendingChanges状态
     };
     const tmp = file + ".tmp";
     try {
