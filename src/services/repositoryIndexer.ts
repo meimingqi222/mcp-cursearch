@@ -9,7 +9,7 @@ import { Semaphore } from "../utils/semaphore.js";
 import { V1MasterKeyedEncryptionScheme, decryptPathToRelPosix, encryptPathWindows, genPathKey, sha256Hex } from "../crypto/pathEncryption.js";
 import { ensureIndexCreated, fastRepoInitHandshakeV2, fastRepoSyncComplete, fastUpdateFileV2, syncMerkleSubtreeV2 } from "../client/cursorApi.js";
 import { loadWorkspaceState, saveWorkspaceState, WorkspaceState, setRuntimeCodebaseId, getRuntimeCodebaseId } from "./stateManager.js";
-import { startFileWatcher } from "./fileWatcher.js";
+import { startFileWatcher } from "./watcherManager.js";
 import { getLogger } from "../utils/logger.js";
 
 export type IndexerContext = { authToken: string; baseUrl: string };
@@ -427,7 +427,6 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
     return out;
   }
 
-  const startedWatchers = new Set<string>();
   const scheduled = new Set<string>();
 
 
@@ -590,17 +589,10 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
     };
     await saveWorkspaceState(st);
     indexLogger.info("State saved successfully");
-    // start watcher and schedule auto-sync
-    if (!startedWatchers.has(workspacePath)) {
     indexLogger.debug("State saved", { codebaseId, repoName: finalRepoName });
 
-      startFileWatcher(workspacePath);
-      startedWatchers.add(workspacePath);
-    }
-    if (!scheduled.has(workspacePath)) {
-      scheduleAutoSync(workspacePath);
-      scheduled.add(workspacePath);
-    }
+    // start watcher and schedule auto-sync（watcherManager 内部防重复）
+    ensureRealtimeSync(workspacePath);
     const base = { codebaseId: codebaseId, uploaded: totalUploaded, batches: batches.length, nextSyncAt: new Date(Date.now() + 5 * 60 * 1000).toISOString() } as any;
     if (params.verbose) base.files = uploadedFilesVerbose;
     return base;
@@ -664,6 +656,14 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
     setInterval(() => { void autoSyncIfNeeded(workspacePath); }, DEFAULTS.AUTO_SYNC_INTERVAL_MS);
   }
 
-  return { indexProject, autoSyncIfNeeded, scheduleAutoSync, startFileWatcher };
+  function ensureRealtimeSync(workspacePath: string) {
+    startFileWatcher(workspacePath);
+    if (!scheduled.has(workspacePath)) {
+      scheduleAutoSync(workspacePath);
+      scheduled.add(workspacePath);
+    }
+  }
+
+  return { indexProject, autoSyncIfNeeded, scheduleAutoSync, startFileWatcher, ensureRealtimeSync };
 }
 

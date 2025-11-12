@@ -110,6 +110,8 @@ async function handleIndexActivate(args: string[], authToken: string, baseUrl: s
 
   if (isIndexed) {
     console.log(`✅ Workspace already indexed (codebaseId: ${state.codebaseId})`);
+    const indexer = createRepositoryIndexer({ authToken, baseUrl });
+    indexer.ensureRealtimeSync(resolvedPath);
   } else {
     console.log("📤 Indexing workspace...");
     const indexer = createRepositoryIndexer({ authToken, baseUrl });

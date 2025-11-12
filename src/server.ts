@@ -3,9 +3,8 @@ import { z } from "zod";
 import path from "path";
 import { createRepositoryIndexer } from "./services/repositoryIndexer.js";
 import { createCodeSearcher } from "./services/codeSearcher.js";
-import { setActiveWorkspace } from "./services/stateManager.js";
+import { setActiveWorkspace, loadWorkspaceState } from "./services/stateManager.js";
 import { logger } from "./utils/logger.js";
-import { startFileWatcher } from "./services/watcherManager.js";
 
 export type ServerContext = { authToken: string; baseUrl: string };
 
@@ -168,11 +167,6 @@ export async function createMcpServer(server: any, ctx: ServerContext): Promise<
             }
           });
 
-          // 索引完成后启动文件监听器和自动同步
-          startFileWatcher(normalizedPath);
-          indexer.scheduleAutoSync(normalizedPath);
-          logger.info(`File watcher and auto-sync scheduled for workspace: ${normalizedPath}`);
-
           indexingTasks.set(normalizedPath, {
             status: 'completed',
             progress: 100,
@@ -204,6 +198,14 @@ export async function createMcpServer(server: any, ctx: ServerContext): Promise<
       const { workspace_path } = setWorkspaceArgsSchema.parse(args || {});
       const normalizedPath = path.resolve(workspace_path);
       await setActiveWorkspace(normalizedPath);
+      try {
+        const st = await loadWorkspaceState(normalizedPath);
+        if (st.codebaseId && st.pathKey) {
+          indexer.ensureRealtimeSync(normalizedPath);
+        }
+      } catch (err) {
+        logger.warn(`Failed to load workspace state during set_workspace`, { workspacePath: normalizedPath, error: err instanceof Error ? err.message : String(err) });
+      }
       logger.info(`Active workspace set to: ${normalizedPath}`);
       return CompatibilityCallToolResultSchema.parse({
         content: [{ type: "text", text: JSON.stringify({
