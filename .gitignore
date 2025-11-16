@@ -8,6 +8,7 @@ dist/
 # IDE and editor specific
 .cursor/
 .augment/
+.claude/
 .vscode/
 .idea/
 *.swp
@@ -19,6 +20,7 @@ dist/
 Thumbs.db
 desktop.ini
 *.bak
+nul
 
 # Testing
 coverage/

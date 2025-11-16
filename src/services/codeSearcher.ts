@@ -5,6 +5,8 @@ import crypto from "crypto";
 import { loadWorkspaceState, getActiveWorkspace } from "./stateManager.js";
 import { V1MasterKeyedEncryptionScheme, decryptPathToRelPosix } from "../crypto/pathEncryption.js";
 import picomatch from "picomatch";
+import { getLogger } from "../utils/logger.js";
+import readline from "node:readline";
 
 export type SearchParams = {
   query: string;
@@ -22,29 +24,49 @@ export type SearchHit = {
   codePreview: string;
 };
 
+type FileWindow = { lines: string[] };
+
+async function readFileWindow(workspacePath: string, filePath: string, startLine: number, endLine: number): Promise<FileWindow> {
+  const normalizedStart = Math.max(1, startLine);
+  const normalizedEnd = Math.max(normalizedStart, endLine);
+  const fullPath = path.join(workspacePath, filePath);
+  let stream: fs.ReadStream | null = null;
+  let rl: readline.Interface | null = null;
+  try {
+    stream = fs.createReadStream(fullPath, { encoding: "utf-8" });
+    rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+    const collected: string[] = [];
+    let currentLine = 0;
+    for await (const line of rl) {
+      currentLine++;
+      if (currentLine < normalizedStart) continue;
+      if (currentLine > normalizedEnd) break;
+      collected.push(line);
+    }
+    return { lines: collected };
+  } catch {
+    return { lines: [] };
+  } finally {
+    rl?.close();
+    stream?.destroy();
+  }
+}
+
 // Helper function to read file lines and extract code preview
 async function readCodeFromFile(workspacePath: string, filePath: string, startLine: number, endLine: number): Promise<string> {
   try {
-    const fullPath = path.join(workspacePath, filePath);
-    const content = await fs.readFile(fullPath, "utf-8");
-    const lines = content.split("\n");
-    
-    // Adjust for 0-based indexing if needed
-    const start = Math.max(0, startLine - 1);
-    const end = Math.min(lines.length, endLine);
-    const codeLines = lines.slice(start, end);
-    
-    // If 6 or fewer lines, show all
+    const window = await readFileWindow(workspacePath, filePath, startLine, endLine);
+    const codeLines = window.lines;
+    if (codeLines.length === 0) return "";
+
     if (codeLines.length <= 6) {
       return codeLines.join("\n");
     }
-    
-    // Otherwise, show first 4 and last 2
+
     const firstFour = codeLines.slice(0, 4);
     const lastTwo = codeLines.slice(-2);
-    
     return [...firstFour, "<Omitted>...</Omitted>", ...lastTwo].join("\n");
-  } catch (error) {
+  } catch {
     return "";
   }
 }
@@ -223,32 +245,23 @@ function shouldExcludeLine(line: string, fileExt: string): boolean {
 // Helper function to extract signatures from code lines
 async function extractSignaturesFromFile(workspacePath: string, filePath: string, startLine: number, endLine: number): Promise<Array<{ line: number; text: string }>> {
   try {
-    const fullPath = path.join(workspacePath, filePath);
-    const content = await fs.readFile(fullPath, "utf-8");
-    const lines = content.split("\n");
+    const window = await readFileWindow(workspacePath, filePath, startLine, endLine);
+    if (window.lines.length === 0) return [];
 
     const signatures: Array<{ line: number; text: string }> = [];
-    const start = Math.max(0, startLine - 1);
-    const end = Math.min(lines.length, endLine);
-
-    // Get file extension and appropriate patterns
     const fileExt = getFileExtension(filePath);
     const signaturePatterns = getSignaturePatterns(fileExt);
+    const seenLines = new Set<number>();
 
-    // Extract signatures from the specified line range
-    const seenLines = new Set<number>();  // Avoid duplicates
+    for (let i = 0; i < window.lines.length; i++) {
+      const line = window.lines[i];
+      const lineNum = startLine + i;
 
-    for (let i = start; i < end; i++) {
-      const line = lines[i];
-
-      // Use the new shouldExcludeLine function to filter out non-signatures
       if (shouldExcludeLine(line, fileExt)) {
         continue;
       }
 
-      // Check if line matches any signature pattern
       if (signaturePatterns.some(pattern => pattern.test(line))) {
-        const lineNum = i + 1;
         if (!seenLines.has(lineNum)) {
           signatures.push({ line: lineNum, text: line.trim() });
           seenLines.add(lineNum);
@@ -257,12 +270,13 @@ async function extractSignaturesFromFile(workspacePath: string, filePath: string
     }
 
     return signatures;
-  } catch (error) {
+  } catch {
     return [];
   }
 }
 
 export function createCodeSearcher(ctx: { authToken: string; baseUrl: string }, indexer: { autoSyncIfNeeded: (workspacePath: string) => Promise<void> }) {
+  const log = getLogger("CodeSearcher");
   async function search(params: SearchParams) {
     // Get the active workspace
     const workspacePath = await getActiveWorkspace();
@@ -278,10 +292,12 @@ export function createCodeSearcher(ctx: { authToken: string; baseUrl: string }, 
     await indexer.autoSyncIfNeeded(workspacePath);
 
     const st = await loadWorkspaceState(workspacePath);
-    console.log(`🔍 [SEARCH DEBUG] Loaded state for search:`);
-    console.log(`   - codebaseId: ${st.codebaseId || 'NONE'}`);
-    console.log(`   - pathKey: ${st.pathKey ? st.pathKey.substring(0, 20) + '...' : 'NONE'}`);
-    console.log(`   - pathKeyHash: ${st.pathKeyHash || 'NONE'}`);
+    log.debug("Loaded workspace state", {
+      workspacePath,
+      codebaseId: st.codebaseId || "NONE",
+      pathKeyPrefix: st.pathKey ? st.pathKey.substring(0, 20) : "NONE",
+      pathKeyHash: st.pathKeyHash || "NONE",
+    });
     if (!st.codebaseId || !st.pathKey) {
       throw new Error(
         "Active workspace not indexed yet. Please run:\n" +
@@ -309,7 +325,7 @@ export function createCodeSearcher(ctx: { authToken: string; baseUrl: string }, 
     });
     const codeResults = (res?.code_results || res?.codeResults || []) as any[];
     const scheme = new V1MasterKeyedEncryptionScheme(st.pathKey);
-    console.log(`🔓 [SEARCH DEBUG] Created decryption scheme with pathKey: ${st.pathKey.substring(0, 20)}...`);
+    log.debug("Created decryption scheme", { pathKeyPrefix: st.pathKey.substring(0, 20) });
 
     // Map results and read actual file content for each hit
     const hits: SearchHit[] = await Promise.all(codeResults.map(async (r, index) => {
@@ -317,19 +333,21 @@ export function createCodeSearcher(ctx: { authToken: string; baseUrl: string }, 
       const encPath = block.relative_workspace_path || block.relativeWorkspacePath || "unknown";
 
       if (index === 0) {
-        console.log(`🔓 [SEARCH DEBUG] First encrypted path: ${encPath.substring(0, 50)}...`);
+        log.debug("Sample encrypted path", { encPath: encPath.substring(0, 100) });
       }
 
       let decPath: string;
       try {
         decPath = decryptPathToRelPosix(scheme, encPath);
         if (index === 0) {
-          console.log(`🔓 [SEARCH DEBUG] First decrypted path: ${decPath}`);
+          log.debug("Sample decrypted path", { decPath });
         }
       } catch (error) {
         // If decryption fails, log the error and use a placeholder
-        console.warn(`Failed to decrypt path: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        console.warn(`Encrypted path was: "${encPath.substring(0, 100)}..."`);
+        log.warn("Failed to decrypt path", {
+          error: error instanceof Error ? error.message : String(error),
+          sampleEncryptedPath: encPath.substring(0, 100),
+        });
         decPath = "<decryption-failed>";
       }
       const range = block.range || {};
@@ -362,8 +380,19 @@ export function createCodeSearcher(ctx: { authToken: string; baseUrl: string }, 
       if (excludeMatcher && excludeMatcher(p)) return false;
       return true;
     });
-    return { total: filtered.length, hits: filtered.slice(0, params.maxResults) };
+    const deduped: SearchHit[] = [];
+    const seen = new Set<string>();
+    for (const hit of filtered) {
+      const key = `${hit.path}:${hit.startLine ?? 0}:${hit.endLine ?? hit.startLine ?? 0}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(hit);
+    }
+    deduped.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+    return { total: deduped.length, hits: deduped.slice(0, params.maxResults) };
   }
   return { search };
 }
+
+export { readFileWindow, readCodeFromFile, extractSignaturesFromFile };
 

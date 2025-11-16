@@ -3,7 +3,8 @@ import { z } from "zod";
 import path from "path";
 import { createRepositoryIndexer } from "./services/repositoryIndexer.js";
 import { createCodeSearcher } from "./services/codeSearcher.js";
-import { setActiveWorkspace, loadWorkspaceState } from "./services/stateManager.js";
+import { setActiveWorkspace, loadWorkspaceState, updateWorkspaceIndexStatus } from "./services/stateManager.js";
+import type { IndexStatus } from "./services/stateManager.js";
 import { logger } from "./utils/logger.js";
 
 export type ServerContext = { authToken: string; baseUrl: string };
@@ -69,13 +70,59 @@ export async function createMcpServer(server: any, ctx: ServerContext): Promise<
   } as const;
 
   // Indexing task state management (in-memory, per MCP server instance)
+  const TASK_TTL_MS = parseInt(process.env.INDEX_TASK_TTL_MS || String(10 * 60 * 1000), 10);
   const indexingTasks = new Map<string, {
     status: 'pending' | 'indexing' | 'completed' | 'failed';
     progress: number;
     startTime: number;
     error?: string;
     result?: string;
+    cleanupTimer?: NodeJS.Timeout;
+    expiresAt?: number;
   }>();
+
+  function cleanupTask(workspacePath: string) {
+    const task = indexingTasks.get(workspacePath);
+    if (!task) return;
+    if (task.cleanupTimer) {
+      clearTimeout(task.cleanupTimer);
+    }
+    indexingTasks.delete(workspacePath);
+  }
+
+  function scheduleTaskExpiry(workspacePath: string) {
+    const task = indexingTasks.get(workspacePath);
+    if (!task) return;
+    if (task.cleanupTimer) clearTimeout(task.cleanupTimer);
+    const ttl = Math.max(0, TASK_TTL_MS);
+    if (ttl === 0) {
+      cleanupTask(workspacePath);
+      return;
+    }
+    task.expiresAt = Date.now() + ttl;
+    task.cleanupTimer = setTimeout(() => cleanupTask(workspacePath), ttl);
+  }
+
+  const progressBuckets = new Map<string, number>();
+
+  function buildIndexStatus(status: IndexStatus["status"], progress?: number, error?: string): IndexStatus {
+    const snapshot: IndexStatus = {
+      status,
+      updatedAt: new Date().toISOString(),
+    };
+    if (typeof progress === "number") snapshot.progress = Number(progress.toFixed(2));
+    if (error) snapshot.error = error;
+    return snapshot;
+  }
+
+  function persistIndexStatus(workspacePath: string, status: IndexStatus): void {
+    updateWorkspaceIndexStatus(workspacePath, status).catch((error: unknown) => {
+      logger.warn("Failed to persist index status", {
+        workspacePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     return ListToolsResultSchema.parse({
@@ -129,6 +176,9 @@ export async function createMcpServer(server: any, ctx: ServerContext): Promise<
 
       // Check if already indexing
       const existingTask = indexingTasks.get(normalizedPath);
+      if (existingTask && existingTask.expiresAt && existingTask.expiresAt < Date.now()) {
+        cleanupTask(normalizedPath);
+      }
       if (existingTask && (existingTask.status === 'indexing' || existingTask.status === 'pending')) {
         return CompatibilityCallToolResultSchema.parse({
           content: [{ type: "text", text: JSON.stringify({
@@ -145,11 +195,14 @@ export async function createMcpServer(server: any, ctx: ServerContext): Promise<
         progress: 0,
         startTime: Date.now(),
       });
+      progressBuckets.delete(normalizedPath);
+      persistIndexStatus(normalizedPath, buildIndexStatus('pending', 0));
 
       // Start indexing asynchronously (don't await)
       (async () => {
         try {
           indexingTasks.set(normalizedPath, { ...indexingTasks.get(normalizedPath)!, status: 'indexing' });
+          persistIndexStatus(normalizedPath, buildIndexStatus('indexing', 0));
           logger.info(`Starting index creation for workspace: ${normalizedPath}`);
           
           // Pass progress callback to update indexing status in real-time
@@ -163,25 +216,37 @@ export async function createMcpServer(server: any, ctx: ServerContext): Promise<
                   progress: progress.percentage,
                 });
                 logger.debug(`Indexing progress for ${normalizedPath}: ${progress.percentage}% (${progress.current}/${progress.total})`);
+                const bucket = Math.floor(progress.percentage / 10);
+                const lastBucket = progressBuckets.get(normalizedPath) ?? -1;
+                if (bucket > lastBucket) {
+                  progressBuckets.set(normalizedPath, bucket);
+                  persistIndexStatus(normalizedPath, buildIndexStatus('indexing', progress.percentage));
+                }
               }
             }
           });
 
           indexingTasks.set(normalizedPath, {
+            ...indexingTasks.get(normalizedPath)!,
             status: 'completed',
             progress: 100,
-            startTime: indexingTasks.get(normalizedPath)!.startTime,
             result: 'Index created successfully',
           });
+          scheduleTaskExpiry(normalizedPath);
+          progressBuckets.delete(normalizedPath);
+          persistIndexStatus(normalizedPath, buildIndexStatus('completed', 100));
           logger.info(`Index creation completed for workspace: ${normalizedPath}`);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
           indexingTasks.set(normalizedPath, {
+            ...indexingTasks.get(normalizedPath)!,
             status: 'failed',
             progress: 0,
-            startTime: indexingTasks.get(normalizedPath)!.startTime,
             error: errorMessage,
           });
+          scheduleTaskExpiry(normalizedPath);
+          progressBuckets.delete(normalizedPath);
+          persistIndexStatus(normalizedPath, buildIndexStatus('failed', 0, errorMessage));
           logger.error(`Index creation failed for workspace ${normalizedPath}:`, error);
         }
       })();
@@ -218,13 +283,30 @@ export async function createMcpServer(server: any, ctx: ServerContext): Promise<
     if (name === "get_index_progress") {
       const { workspace_path } = getIndexProgressArgsSchema.parse(args || {});
       const normalizedPath = path.resolve(workspace_path);
-      const task = indexingTasks.get(normalizedPath);
+      let task = indexingTasks.get(normalizedPath);
+
+      if (task && task.expiresAt && task.expiresAt < Date.now()) {
+        cleanupTask(normalizedPath);
+        task = undefined;
+      }
 
       if (!task) {
         // 内存中没有任务，检查磁盘状态
         try {
-          const { loadWorkspaceState } = await import("./services/stateManager.js");
           const st = await loadWorkspaceState(normalizedPath);
+
+          if (st.lastIndexStatus) {
+            return CompatibilityCallToolResultSchema.parse({
+              content: [{ type: "text", text: JSON.stringify({
+                workspace_path: normalizedPath,
+                status: st.lastIndexStatus.status,
+                progress: st.lastIndexStatus.progress,
+                updated_at: st.lastIndexStatus.updatedAt,
+                ...(st.lastIndexStatus.error && { error: st.lastIndexStatus.error }),
+                message: `Loaded cached status for ${normalizedPath}.`,
+              }) }],
+            });
+          }
 
           if (st.codebaseId && st.pathKey) {
             // 工作区已索引完成

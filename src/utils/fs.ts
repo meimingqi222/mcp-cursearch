@@ -1,6 +1,7 @@
 import path from "path";
 import fs from "fs-extra";
 import ignore, { Ignore } from "ignore";
+import { getTextExtensions } from "./env.js";
 
 const IGNORE_PATTERNS: string[] = [
   "node_modules/",
@@ -76,7 +77,7 @@ export function clearIgnoreCache(workspacePath?: string): void {
 export function shouldIgnore(fileAbs: string, workspacePath: string): boolean {
   const rel = path.relative(workspacePath, fileAbs).replace(/\\/g, "/");
 
-  // First check hardcoded patterns for quick filtering
+  // 首先检查硬编码模式以快速过滤
   const matchesHardcoded = IGNORE_PATTERNS.some((p) =>
     (p.endsWith("/") ? rel.startsWith(p) : rel.includes(p))
   );
@@ -84,9 +85,27 @@ export function shouldIgnore(fileAbs: string, workspacePath: string): boolean {
     return true;
   }
 
-  // Then check .gitignore and .cursorignore patterns
+  // 然后检查 .gitignore 和 .cursorignore 模式
   const ig = loadIgnorePatterns(workspacePath);
-  return ig.ignores(rel);
+  if (ig.ignores(rel)) {
+    return true;
+  }
+
+  // 检查文件后缀是否在支持列表中（仅对文件进行检查）
+  try {
+    const stats = fs.statSync(fileAbs);
+    if (stats.isFile()) {
+      const ext = path.extname(fileAbs).toLowerCase();
+      const supportedExtensions = getTextExtensions();
+      if (!supportedExtensions.includes(ext)) {
+        return true;
+      }
+    }
+  } catch (err) {
+    // 如果无法获取文件状态，默认不忽略
+  }
+
+  return false;
 }
 
 export async function listFiles(workspacePath: string, limit = 1000): Promise<string[]> {

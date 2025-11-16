@@ -4,6 +4,13 @@ import { Mutex } from "async-mutex";
 import { logger } from "../utils/logger.js";
 import { getProjectDirForWorkspace, getProjectRootDir } from "../utils/env.js";
 
+export type IndexStatus = {
+  status: 'pending' | 'indexing' | 'completed' | 'failed';
+  progress?: number;
+  updatedAt: string;
+  error?: string;
+};
+
 export type WorkspaceState = {
   workspacePath: string;
   codebaseId?: string;
@@ -13,6 +20,9 @@ export type WorkspaceState = {
   repoName?: string;
   repoOwner?: string;
   pendingChanges?: boolean;  // 持久化到磁盘，用于跨进程同步状态
+  lastIndexStatus?: IndexStatus;
+  lastAutoSyncAt?: string;
+  autoSyncBackoffMs?: number;
 };
 
 // Per-workspace mutex to serialize state reads/writes
@@ -64,6 +74,9 @@ export async function saveWorkspaceState(st: WorkspaceState): Promise<void> {
       repoName: st.repoName,
       repoOwner: st.repoOwner,
       pendingChanges: st.pendingChanges ?? false, // 持久化pendingChanges状态
+      lastIndexStatus: st.lastIndexStatus,
+      lastAutoSyncAt: st.lastAutoSyncAt,
+      autoSyncBackoffMs: st.autoSyncBackoffMs,
     };
     const tmp = file + ".tmp";
     try {
@@ -157,5 +170,11 @@ export async function setActiveWorkspace(workspacePath: string): Promise<void> {
 
 export async function clearActiveWorkspace(): Promise<void> {
   await saveActiveWorkspace(null);
+}
+
+export async function updateWorkspaceIndexStatus(workspacePath: string, status: IndexStatus): Promise<void> {
+  const st = await loadWorkspaceState(workspacePath);
+  st.lastIndexStatus = status;
+  await saveWorkspaceState(st);
 }
 

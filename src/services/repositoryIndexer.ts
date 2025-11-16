@@ -427,7 +427,7 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
     return out;
   }
 
-  const scheduled = new Set<string>();
+  const autoSyncTimers = new Map<string, NodeJS.Timeout>();
 
 
   async function indexProject(params: { 
@@ -604,10 +604,17 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
     if (!runtimeId || !st.pathKey || !st.orthogonalTransformSeed) return;
     // Prime runtime cache if needed
     if (!getRuntimeCodebaseId(workspacePath) && runtimeId) setRuntimeCodebaseId(workspacePath, runtimeId);
-    indexLogger.debug("Auto-sync check", { workspacePath, pendingChanges: st.pendingChanges, runtimeIdPresent: !!runtimeId });
+    const backoffMs = st.autoSyncBackoffMs ?? DEFAULTS.AUTO_SYNC_MIN_INTERVAL_MS;
+    const now = Date.now();
+    const lastRun = st.lastAutoSyncAt ? Date.parse(st.lastAutoSyncAt) : 0;
+    const sinceLast = now - lastRun;
+    indexLogger.debug("Auto-sync check", { workspacePath, pendingChanges: st.pendingChanges, runtimeIdPresent: !!runtimeId, sinceLast });
 
-    // 先判断标志再做重活，避免不必要的性能开销
     if (!st.pendingChanges) return;
+    if (lastRun && sinceLast < backoffMs) {
+      indexLogger.debug("Auto-sync skipped due to backoff", { workspacePath, backoffMs, sinceLast });
+      return;
+    }
 
     // 先清除标志，避免重复触发
     // 如果同步期间有新变更，fileWatcher 会重新设置为 true
@@ -622,6 +629,11 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
       
       if (changed.length === 0) {
         indexLogger.debug("No files changed, sync skipped", { workspacePath });
+        const refresh = await loadWorkspaceState(workspacePath);
+        refresh.lastAutoSyncAt = new Date().toISOString();
+        refresh.autoSyncBackoffMs = DEFAULTS.AUTO_SYNC_MIN_INTERVAL_MS;
+        refresh.pendingChanges = false;
+        await saveWorkspaceState(refresh);
         return;
       }
       
@@ -643,24 +655,58 @@ export function createRepositoryIndexer(ctx: IndexerContext) {
       const repositoryPb = createRepositoryPb(workspacePath, st.orthogonalTransformSeed, st.repoName || `local-${crypto.createHash("sha256").update(workspacePath).digest("hex").slice(0, 12)}`);
       await runEnsureAndSyncComplete(ctx.baseUrl, ctx.authToken, repositoryPb, runtimeId, simhash, pathKeyHash);
       indexLogger.info("Auto-sync completed successfully", { workspacePath, filesUploaded: changed.length });
+      const successState = await loadWorkspaceState(workspacePath);
+      successState.lastAutoSyncAt = new Date().toISOString();
+      successState.autoSyncBackoffMs = DEFAULTS.AUTO_SYNC_MIN_INTERVAL_MS;
+      successState.pendingChanges = false;
+      await saveWorkspaceState(successState);
     } catch (error) {
       // 同步失败时，重新设置标志，以便下次重试
       indexLogger.error("Auto-sync failed, will retry on next interval", { workspacePath, error });
       const errorSt = await loadWorkspaceState(workspacePath);
       errorSt.pendingChanges = true;
+      const nextBackoff = Math.min(DEFAULTS.AUTO_SYNC_MAX_INTERVAL_MS, (errorSt.autoSyncBackoffMs ?? DEFAULTS.AUTO_SYNC_MIN_INTERVAL_MS) * 2);
+      errorSt.autoSyncBackoffMs = nextBackoff;
+      errorSt.lastAutoSyncAt = new Date().toISOString();
       await saveWorkspaceState(errorSt);
     }
   }
 
   function scheduleAutoSync(workspacePath: string) {
-    setInterval(() => { void autoSyncIfNeeded(workspacePath); }, DEFAULTS.AUTO_SYNC_INTERVAL_MS);
+    if (autoSyncTimers.has(workspacePath)) {
+      return;
+    }
+
+    const runCycle = async () => {
+      autoSyncTimers.delete(workspacePath);
+      try {
+        await autoSyncIfNeeded(workspacePath);
+      } catch (error) {
+        indexLogger.error("Auto-sync cycle error", { workspacePath, error });
+      } finally {
+        let nextDelay = DEFAULTS.AUTO_SYNC_INTERVAL_MS;
+        try {
+          const st = await loadWorkspaceState(workspacePath);
+          nextDelay = st.autoSyncBackoffMs ?? DEFAULTS.AUTO_SYNC_INTERVAL_MS;
+        } catch {
+          // fall back to default delay
+        }
+        const clamped = Math.min(
+          DEFAULTS.AUTO_SYNC_MAX_INTERVAL_MS,
+          Math.max(DEFAULTS.AUTO_SYNC_MIN_INTERVAL_MS, nextDelay),
+        );
+        const timer = setTimeout(() => { void runCycle(); }, clamped);
+        autoSyncTimers.set(workspacePath, timer);
+      }
+    };
+
+    void runCycle();
   }
 
   function ensureRealtimeSync(workspacePath: string) {
     startFileWatcher(workspacePath);
-    if (!scheduled.has(workspacePath)) {
+    if (!autoSyncTimers.has(workspacePath)) {
       scheduleAutoSync(workspacePath);
-      scheduled.add(workspacePath);
     }
   }
 

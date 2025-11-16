@@ -84,8 +84,45 @@ export const DEFAULTS = {
   PROTO_TIMEOUT_MS: parseInt(process.env.PROTO_TIMEOUT_MS || "30000", 10),
   PROTO_SEARCH_TIMEOUT_MS: parseInt(process.env.PROTO_SEARCH_TIMEOUT_MS || "60000", 10),
   AUTO_SYNC_INTERVAL_MS: parseInt(process.env.AUTO_SYNC_INTERVAL_MS || String(5 * 60 * 1000), 10),
+  AUTO_SYNC_MIN_INTERVAL_MS: parseInt(process.env.AUTO_SYNC_MIN_INTERVAL_MS || String(30 * 1000), 10),
+  AUTO_SYNC_MAX_INTERVAL_MS: parseInt(process.env.AUTO_SYNC_MAX_INTERVAL_MS || String(5 * 60 * 1000), 10),
   SEMAPHORE_RETRY_COUNT: parseInt(process.env.SEMAPHORE_RETRY_COUNT || "3", 10),
   SEMAPHORE_RETRY_DELAY_MS: parseInt(process.env.SEMAPHORE_RETRY_DELAY_MS || "200", 10),
 };
+
+// 内置支持的文本文件后缀列表
+export const DEFAULT_TEXT_EXTENSIONS = [
+  // 文档类
+  ".txt", ".md", ".markdown", ".mkd", ".mkdn", ".mkdown", ".rst", ".rest", ".adoc", ".asciidoc",
+  // 编程语言（主流）
+  ".js", ".jsx", ".ts", ".tsx", ".py", ".java", ".c", ".cpp", ".cxx", ".cc", ".h", ".hpp", ".hxx",
+  ".cs", ".php", ".rb", ".go", ".rs", ".swift", ".kt", ".scala", ".clj", ".hs", ".ml", ".m", ".r",
+  ".pl", ".pm", ".sh", ".bash", ".ps1", ".lua", ".dart", ".nim", ".zig", ".v", ".ex", ".exs",
+  // Web技术
+  ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".astro", ".jsx", ".tsx",
+  // 配置和数据格式
+  ".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml", ".csv", ".tsv", ".env",
+  // 模板和DSL
+  ".sql", ".graphql", ".gql", ".proto", ".dockerfile", "dockerfile", ".makefile", "makefile",
+  // 文档标记
+  ".tex", ".latex", ".bib", ".rtf", ".org", ".wiki", ".mediawiki",
+];
+
+// 从环境变量解析自定义后缀列表
+export function getTextExtensions(): string[] {
+  const customExt = process.env.TEXT_EXTENSIONS;
+  if (!customExt) {
+    return DEFAULT_TEXT_EXTENSIONS;
+  }
+  
+  // 分割并清理后缀列表
+  const extensions = customExt
+    .split(",")
+    .map(ext => ext.trim())
+    .filter(ext => ext.length > 0)
+    .map(ext => ext.startsWith(".") ? ext : "." + ext);
+  
+  return [...new Set([...DEFAULT_TEXT_EXTENSIONS, ...extensions])];
+}
 
 

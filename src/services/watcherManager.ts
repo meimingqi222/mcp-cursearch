@@ -2,10 +2,32 @@
  * Watcher manager to prevent duplicate file watchers
  */
 
-import { startFileWatcher as baseStartFileWatcher } from "./fileWatcher.js";
+import { startFileWatcher as baseStartFileWatcher, FileWatcherHandle } from "./fileWatcher.js";
 
 // 全局 Map 跟踪已启动的监听器
-const activeWatchers = new Map<string, boolean>();
+const activeWatchers = new Map<string, FileWatcherHandle>();
+let cleanupRegistered = false;
+
+async function closeAllWatchers() {
+  const handles = Array.from(activeWatchers.values());
+  activeWatchers.clear();
+  await Promise.all(handles.map(async (handle) => {
+    try {
+      await handle.close();
+    } catch {
+      // 忽略关闭错误，进程即将结束
+    }
+  }));
+}
+
+function ensureProcessCleanupHook() {
+  if (cleanupRegistered) return;
+  cleanupRegistered = true;
+  const cleanup = () => { void closeAllWatchers(); };
+  process.once("SIGINT", cleanup);
+  process.once("SIGTERM", cleanup);
+  process.once("exit", cleanup);
+}
 
 /**
  * Start file watcher with duplicate prevention
@@ -16,11 +38,11 @@ export function startFileWatcher(workspacePath: string): void {
     return;
   }
 
-  // 标记为已启动
-  activeWatchers.set(workspacePath, true);
+  ensureProcessCleanupHook();
 
-  // 调用原始的 startFileWatcher
-  baseStartFileWatcher(workspacePath);
+  // 调用原始的 startFileWatcher 并保存句柄
+  const handle = baseStartFileWatcher(workspacePath);
+  activeWatchers.set(workspacePath, handle);
 }
 
 /**
@@ -31,8 +53,18 @@ export function isWatcherActive(workspacePath: string): boolean {
 }
 
 /**
- * Mark a watcher as inactive (for cleanup)
+ * Stop watcher for workspace
  */
-export function deactivateWatcher(workspacePath: string): void {
+export async function stopFileWatcher(workspacePath: string): Promise<void> {
+  const handle = activeWatchers.get(workspacePath);
+  if (!handle) return;
   activeWatchers.delete(workspacePath);
+  await handle.close();
+}
+
+/**
+ * Stop all watchers (e.g. during teardown)
+ */
+export async function stopAllWatchers(): Promise<void> {
+  await closeAllWatchers();
 }

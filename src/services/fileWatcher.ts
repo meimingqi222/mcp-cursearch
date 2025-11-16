@@ -4,7 +4,11 @@ import { saveWorkspaceState, loadWorkspaceState } from "./stateManager.js";
 import { clearIgnoreCache } from "../utils/fs.js";
 import { getLogger } from "../utils/logger.js";
 
-export function startFileWatcher(workspacePath: string): void {
+export type FileWatcherHandle = {
+  close: () => Promise<void>;
+};
+
+export function startFileWatcher(workspacePath: string): FileWatcherHandle {
   const log = getLogger("FileWatcher");
 
   const ignored = [/(^|[\\/])\../, /node_modules/, /dist/, /build/, /.nyc_output/, /coverage/];
@@ -81,8 +85,23 @@ export function startFileWatcher(workspacePath: string): void {
     log.error("Watcher error", { workspacePath, error: e?.message });
   });
 
-  const onExit = () => log.info("Watcher shutdown", { workspacePath });
-  process.once("SIGINT", onExit);
-  process.once("SIGTERM", onExit);
-  process.once("exit", onExit);
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    pending.clear();
+    try {
+      await watcher.close();
+      log.info("Watcher shutdown", { workspacePath });
+    } catch (err) {
+      const e = err as Error;
+      log.error("Failed to close watcher", { workspacePath, error: e?.message });
+    }
+  };
+
+  return { close };
 }

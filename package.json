@@ -19,7 +19,7 @@
     "start:with-token": "node dist/mcp.js --auth-token",
     "clean": "rm -rf dist",
     "lint": "eslint src/**/*.ts",
-    "test": "jest",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
     "test:search": "node dist/test-search.js",
     "debug:decrypt": "node dist/debug-decrypt.js"
   },
